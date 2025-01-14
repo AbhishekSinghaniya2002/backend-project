@@ -289,7 +289,7 @@ const changeCurrentPassword = asyncHandler(async(req, res) => {
 const getCurrentUser = asyncHandler(async(req, res) => {
     return res
     .status(200)
-    .json(200, req.user, "current user fetched successfully")
+    .json(new ApiResponse (200, req.user, "current user fetched successfully"))
 
 })
 
@@ -301,7 +301,7 @@ const updateAccountDetails = asyncHandler(async(req , res) => {
         throw new ApiError(400, "All fields are required")
 
     }
-    const user = User.findByIdAndUpdate(
+    const user = await User.findByIdAndUpdate(
         req.user?._id,
         {
            $set: {
@@ -326,6 +326,8 @@ const updateUserAvatar = asyncHandler(async(req, res) => {
     if(!avatarLocalPath){
         throw new ApiError(400, "Avatar file is missing")
     }
+      //TODO: delete old image - assignment
+    
 
     const avatar = await uploadOnCloudinary(avatarLocalPath)
 
@@ -349,40 +351,184 @@ const updateUserAvatar = asyncHandler(async(req, res) => {
     return res
     .status(200)
     .json(new ApiResponse(200,  user, "avatar image updated successfully"))
-   
+})
 
     // Now we update coverImage
 
     const updateUserCoverImage = asyncHandler(async(req, res) => {
-
         const coverImageLocalPath = req.file?.path
-
-        if(!coverImageLocalPath){
+    
+        if (!coverImageLocalPath) {
             throw new ApiError(400, "Cover image file is missing")
         }
-
+    
+        //TODO: delete old image - assignment
+    
+    
         const coverImage = await uploadOnCloudinary(coverImageLocalPath)
-
-        if(!coverImage.url){
-            throw new ApiError(400, "Error while uploading on coverImage")
+    
+        if (!coverImage.url) {
+            throw new ApiError(400, "Error while uploading on avatar")
+            
         }
-
+    
         const user = await User.findByIdAndUpdate(
             req.user?._id,
             {
-                $set: {
+                $set:{
                     coverImage: coverImage.url
                 }
             },
             {new: true}
         ).select("-password")
+    
+        return res
+        .status(200)
+        .json(
+            new ApiResponse(200, user, "Cover image updated successfully")
+        )
+    })
+
+    // Now see how can we do aggregation pipeline or Access chanel information like subscriber , follower , and many more things
+
+    const getUserChannelProfile = asyncHandler(async(req , res) => {
+
+        const {username} = req.params
+
+        if(!username?.trim()){
+            throw new ApiError(400, "username is missing")
+
+        }
+        const channel = await User.aggregate([
+            {
+                $match:{
+                    username: username?.toLowerCase()
+
+                }// here we found the channel name now we find the subscriber 
+            },
+            {
+                $lookup: {
+                    from: "subscriptions",
+                    localField: "_id",
+                    foreignField: "channel",
+                    as: "subscribers" 
+                    // here we have find out all the subscribers. mean mere kitne subscribers hai ye mil gaya hai yaha par.
+                }
+            },
+            // Ab hum dekhenge ki maine kitno ko subscribed kiya hai. 2nd pipeline.
+            {
+                $lookup: {
+                    from: "subscriptions",
+                    localField: _id,
+                    foreignField: "subscriber",
+                    as: "subscribedTo"
+                }
+            },
+            // Ab hum upar vale dono field ko Add karenge
+            {
+                $addFields: {
+                    subscribersCount: {
+                        $size: "$subscribers"// yaha hamne $ use kiya hai kyunki ye ab field hai.
+                    },
+                    channelsSubscribedToCount:{
+                        $size: "$subscribedTo"
+                    },
+                    isSubscribed: {
+                        $cond: {
+                            if: {$in: [req.user?._id, "$subscribers.subscriber"]},
+                            then: true,
+                            else: false // yaha hamne dekha ki kya login ke baad jo user hai vaha par usne subscrib kiya hai ya NAHI.
+                        }
+                    }
+                }
+            },
+// yaha ab hum projection karenge mean projet projection deta hai ki mai sari value ko ekdam se project nahi karunga vaha pe jo bhi usko demand kar raha hai . mai usko selected chije dunga. 
+            
+            {
+                $projects: {
+                    fullName: 1,
+                    username: 1,
+                    email: 1,
+                    avatar: 1,
+                    coverImage: 1,
+                    subscribersCount: 1,
+                    channelsSubscribedToCount: 1,
+                    isSubscribed: 1,
+
+
+                }
+             }
+        ])
+        // console.log("User.aggregate");
+
+        // Agar channel ke under data hi nahi hai to bhi check karnA PADEGA.
+        if(!channel?.length){
+            throw new ApiError(400, "channel does not exists")
+        }
+        return res
+        .status(200)
+        .json(new ApiResponse(200, channel[0], "User channel fetched successfully"))
+
+    })
+    
+    // Now How can we get watch history of User or channel 
+
+    const getWatchHistory = asyncHandler(async(req, res) => {
+        const user = await User.aggregate([
+            {
+                $match:{
+                   // _id: req.user._id ye likhenge to ho jayegi problem kyunki yahah mongoose work nahi karta hai. aggregation pipline ka jitna code hai vo directly hi jata hai. Kyunki hum jante hai ki hame mongodb me jo id milta hai vo real me mongodb ki id nahi hoti vo hoti hai string jo hame vaha milta hai. Agar actual me hame mongo db ki id chahiye hota to hame pura ka pura ye _id: ObjectId('6780db6748989jiuy7y') chahiye hota. Lekin hum yaha use kar rahe hai mongoose aur iske under internally ye hota hai jaise hum isko ye string vali  id dete hai to automatically behind the scene ye is string ko convert kar deta hai tab jo hume milta hai vo hota hai Mongodb ki object id. lekin jab hume is id ko convert karna ho tpo kasie karenge vo dekhte hai. chaliye hum mongoose ki object id banata hai.
+
+                   _id: new mongoose.Types.ObjectId(req.user._id)// yahah par vo document or id match ho gaya hai object id se . Ab user mil gaya hai to hame uske watch history ke under jana padega aur lookup karrna padega to lookup karte hai .
+                   
+                }
+            },
+            {
+                $lookup:{
+                    from: "videos",
+                    localField: "watchHistory",
+                    foreignField: "_id",
+                    as: "watchHistory",
+                    // ab hum us situation par pahuch gaye hai jaha hamare pass bahut sare document aa gaye hai aur vo videos hamare pass aa gaye hai.lekkin problem ye hai ki hame yaha ek sub pipeline lagnai padegi nahi to video section ke owner ka hame kuchh nahi milega. to hum ek aur pipline likhenge. Aur ye lookup ke under hi likh sakte hai hum.
+                    pipeline:[
+                        {
+                            $lookup:{
+                                from: "users",
+                                localField: "owner",
+                                foreignField: "_id",
+                                as: "owner",// Ab yahah par array ke under bahut sari value aa gayi hai users ki like: fullname, email, avatar, aur bhi sari chije ye pura to hame dena nahi hai owner ko to hum phir se ek pipeline lagayenge.
+                                pipeline:[
+                                    {
+                                        $project:{
+                                            fullName: 1,
+                                            username: 1,
+                                            avatar: 1,
+                                        }
+                                    }
+                                ]
+                            }
+                        },// Ab jo array mil rha hai usko aur sahi se handle kar le frontend pe uske liye ek aur pipeline laga raha hu taki chije easily handle ho jaye.
+                        {
+                            $addFields:{
+                                owner:{
+                                    $first: "$owner"
+                                }
+                            }
+                        }
+                    ]
+                }
+                
+            }
+
+        ])
 
         return res
         .status(200)
-        .json(new ApiResponse(200, user, "Cover image updated successfully"))
+        .json(new ApiResponse(200,user[0].watchHistory,"Watch history fetched successfully"))
 
     })
-})
+
+    
 export{
     registerUser,
     loginUser,
@@ -393,5 +539,7 @@ export{
     updateAccountDetails,
     updateUserAvatar,
     updateUserCoverImage,
+    getUserChannelProfile,
+    getWatchHistory,
 
 }
